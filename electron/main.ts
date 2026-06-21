@@ -82,9 +82,29 @@ ipcMain.handle('fs:readFile', async (_event, filePath: string) => {
 
 ipcMain.handle('fs:rename', async (_event, oldPath: string, newPath: string) => {
   try {
-    fs.renameSync(oldPath, newPath)
+    const normalizedOld = path.normalize(oldPath)
+    const normalizedNew = path.normalize(newPath)
+    fs.renameSync(normalizedOld, normalizedNew)
     return { success: true }
   } catch (error: any) {
     return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('fs:exists', async (_event, filePath: string) => {
+  try {
+    fs.accessSync(path.normalize(filePath), fs.constants.F_OK)
+    return true
+  } catch {
+    return false
+  }
+})
+
+ipcMain.handle('fs:listFilenames', async (_event, dirPath: string) => {
+  try {
+    const files = fs.readdirSync(path.normalize(dirPath))
+    return files
+  } catch {
+    return []
   }
 })

@@ -181,6 +181,23 @@ body {
   font-weight: 600;
 }
 
+.file-list-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.selected-count {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin-right: 4px;
+}
+
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
 .file-list {
   display: flex;
   flex-direction: column;
@@ -190,7 +207,7 @@ body {
 
 .file-list-table-header {
   display: grid;
-  grid-template-columns: 1fr 1fr 100px 40px;
+  grid-template-columns: 36px 1fr 1fr 100px 40px;
   gap: 12px;
   padding: 10px 16px;
   background: var(--color-bg);
@@ -208,7 +225,7 @@ body {
 
 .file-list-row {
   display: grid;
-  grid-template-columns: 1fr 1fr 100px 40px;
+  grid-template-columns: 36px 1fr 1fr 100px 40px;
   gap: 12px;
   padding: 10px 16px;
   border-bottom: 1px solid var(--color-border-light);
@@ -221,12 +238,30 @@ body {
   background: var(--color-surface-hover);
 }
 
+.file-list-row.selected {
+  background: var(--color-primary-light);
+}
+
+.file-list-row.selected:hover {
+  background: #bfdbfe;
+}
+
 .file-list-row.conflict {
   background: var(--color-danger-light);
 }
 
 .file-list-row.conflict:hover {
   background: #fecaca;
+}
+
+.file-list-row.error {
+  background: #fef2f2;
+}
+
+.col-checkbox {
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .file-original {
@@ -261,6 +296,21 @@ body {
 .conflict-badge {
   color: var(--color-danger);
   font-weight: 500;
+}
+
+.error-badge {
+  color: var(--color-danger);
+  font-weight: 500;
+}
+
+.error-detail {
+  display: block;
+  font-size: 11px;
+  color: var(--color-danger);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .loading-badge {

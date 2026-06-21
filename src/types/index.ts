@@ -110,6 +110,7 @@ export interface FileItem {
   exifData?: Record<string, any>
   exifLoading?: boolean
   renameError?: string
+  selected: boolean
 }
 
 export interface FileItemWithPreview extends FileItem {
@@ -117,6 +118,7 @@ export interface FileItemWithPreview extends FileItem {
   previewExtension: string
   hasConflict: boolean
   conflictReason?: string
+  diskConflict: boolean
 }
 
 export interface Preset {
@@ -143,4 +145,5 @@ export interface AppState {
   history: RenameHistory[]
   selectedPresetId: string | null
   isProcessing: boolean
+  diskFilenamesByDir: Record<string, string[]>
 }

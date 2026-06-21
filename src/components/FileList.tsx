@@ -10,22 +10,44 @@ function formatFileSize(bytes: number): string {
 }
 
 export function FileList() {
-  const { files, removeFile, clearFiles } = useApp()
+  const { files, removeFile, clearFiles, toggleSelectFile, selectAll, selectNone, selectChanged } = useApp()
 
   if (files.length === 0) {
     return null
   }
 
+  const selectedCount = files.filter((f) => f.selected).length
+  const allSelected = selectedCount === files.length
+
   return (
     <div className="file-list-container">
       <div className="file-list-header">
         <h3>文件列表 ({files.length})</h3>
-        <button className="btn btn-ghost" onClick={clearFiles}>
-          清空全部
-        </button>
+        <div className="file-list-actions">
+          <span className="selected-count">已选: {selectedCount}</span>
+          <button className="btn btn-ghost btn-sm" onClick={selectAll} disabled={allSelected}>
+            全选
+          </button>
+          <button className="btn btn-ghost btn-sm" onClick={selectNone} disabled={selectedCount === 0}>
+            全不选
+          </button>
+          <button className="btn btn-ghost btn-sm" onClick={selectChanged}>
+            选有变更
+          </button>
+          <button className="btn btn-ghost btn-sm" onClick={clearFiles}>
+            清空全部
+          </button>
+        </div>
       </div>
       <div className="file-list">
         <div className="file-list-table-header">
+          <div className="col-checkbox">
+            <input
+              type="checkbox"
+              checked={allSelected}
+              onChange={(e) => e.target.checked ? selectAll() : selectNone()}
+            />
+          </div>
           <div className="col-name">原文件名</div>
           <div className="col-preview">新文件名</div>
           <div className="col-size">大小</div>
@@ -40,8 +62,16 @@ export function FileList() {
             return (
               <div
                 key={file.id}
-                className={`file-list-row ${file.hasConflict ? 'conflict' : ''} ${file.renameError ? 'error' : ''}`}
+                className={`file-list-row ${file.hasConflict ? 'conflict' : ''} ${file.renameError ? 'error' : ''} ${file.selected ? 'selected' : ''}`}
               >
+                <div className="col-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={file.selected}
+                    onChange={() => toggleSelectFile(file.id)}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                </div>
                 <div className="col-name file-original">
                   <span className="file-icon">
                     {file.isDirectory ? '📁' : '📄'}

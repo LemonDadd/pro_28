@@ -14,6 +14,8 @@ declare global {
       stat: (filePath: string) => Promise<{ size: number; mtime: string; isDirectory: boolean } | null>
       readFile: (filePath: string) => Promise<{ data: string } | null>
       rename: (oldPath: string, newPath: string) => Promise<{ success: boolean; error?: string }>
+      exists: (filePath: string) => Promise<boolean>
+      listFilenames: (dirPath: string) => Promise<string[]>
     }
   }
 }
@@ -26,6 +28,11 @@ type Action =
   | { type: 'UPDATE_FILE'; fileId: string; updates: Partial<FileItem> }
   | { type: 'UPDATE_FILES_AFTER_RENAME'; operations: Array<{ originalPath: string; newPath: string }> }
   | { type: 'UNDO_FILES'; operations: Array<{ originalPath: string; newPath: string }> }
+  | { type: 'TOGGLE_SELECT_FILE'; fileId: string }
+  | { type: 'SELECT_ALL' }
+  | { type: 'SELECT_NONE' }
+  | { type: 'SET_SELECTED'; fileIds: string[]; selected: boolean }
+  | { type: 'SET_DISK_FILENAMES'; dirPath: string; filenames: string[] }
   | { type: 'ADD_RULE'; rule: RenameRule }
   | { type: 'UPDATE_RULE'; ruleId: string; updates: Partial<RenameRule> }
   | { type: 'REMOVE_RULE'; ruleId: string }
@@ -46,7 +53,8 @@ const initialState: AppState = {
   presets: [],
   history: [],
   selectedPresetId: null,
-  isProcessing: false
+  isProcessing: false,
+  diskFilenamesByDir: {}
 }
 
 function appReducer(state: AppState, action: Action): AppState {
@@ -116,6 +124,45 @@ function appReducer(state: AppState, action: Action): AppState {
       return { ...state, files: updatedFiles }
     }
 
+    case 'TOGGLE_SELECT_FILE':
+      return {
+        ...state,
+        files: state.files.map((f) =>
+          f.id === action.fileId ? { ...f, selected: !f.selected } : f
+        )
+      }
+
+    case 'SELECT_ALL':
+      return {
+        ...state,
+        files: state.files.map((f) => ({ ...f, selected: true }))
+      }
+
+    case 'SELECT_NONE':
+      return {
+        ...state,
+        files: state.files.map((f) => ({ ...f, selected: false }))
+      }
+
+    case 'SET_SELECTED': {
+      const idSet = new Set(action.fileIds)
+      return {
+        ...state,
+        files: state.files.map((f) =>
+          idSet.has(f.id) ? { ...f, selected: action.selected } : f
+        )
+      }
+    }
+
+    case 'SET_DISK_FILENAMES':
+      return {
+        ...state,
+        diskFilenamesByDir: {
+          ...state.diskFilenamesByDir,
+          [action.dirPath]: action.filenames
+        }
+      }
+
     case 'ADD_RULE':
       return { ...state, rules: [...state.rules, action.rule] }
 
@@ -180,6 +227,10 @@ interface AppContextType extends Omit<AppState, 'files'> {
   addFile: (path: string, stat?: { size: number; mtime: string; isDirectory: boolean }) => Promise<void>
   removeFile: (fileId: string) => void
   clearFiles: () => void
+  toggleSelectFile: (fileId: string) => void
+  selectAll: () => void
+  selectNone: () => void
+  selectChanged: () => void
   addRule: (rule: RenameRule) => void
   updateRule: (ruleId: string, updates: Partial<RenameRule>) => void
   removeRule: (ruleId: string) => void
@@ -195,7 +246,11 @@ interface AppContextType extends Omit<AppState, 'files'> {
 
 const AppContext = createContext<AppContextType | null>(null)
 
-function computePreviews(files: FileItem[], rules: RenameRule[]): FileItemWithPreview[] {
+function computePreviews(
+  files: FileItem[],
+  rules: RenameRule[],
+  diskFilenamesByDir: Record<string, string[]>
+): FileItemWithPreview[] {
   const withPreviews = files.map((file, index): FileItemWithPreview => {
     const { name, ext } = applyRules(rules, file, index)
     return {
@@ -203,14 +258,15 @@ function computePreviews(files: FileItem[], rules: RenameRule[]): FileItemWithPr
       previewName: name,
       previewExtension: ext,
       hasConflict: false,
-      conflictReason: undefined
+      conflictReason: undefined,
+      diskConflict: false
     }
   })
 
   const pathMap = new Map<string, string[]>()
   for (const file of withPreviews) {
     const fullNew = joinFilename(file.previewName, file.previewExtension)
-    const key = file.directory ? `${file.directory}/${fullNew}` : fullNew
+    const key = file.directory ? joinPath(file.directory, fullNew) : fullNew
     if (!pathMap.has(key)) {
       pathMap.set(key, [])
     }
@@ -220,12 +276,28 @@ function computePreviews(files: FileItem[], rules: RenameRule[]): FileItemWithPr
   for (let i = 0; i < withPreviews.length; i++) {
     const file = withPreviews[i]
     const fullNew = joinFilename(file.previewName, file.previewExtension)
-    const key = file.directory ? `${file.directory}/${fullNew}` : fullNew
+    const key = file.directory ? joinPath(file.directory, fullNew) : fullNew
     const ids = pathMap.get(key) || []
     if (ids.length > 1) {
       withPreviews[i] = { ...file, hasConflict: true, conflictReason: '命名冲突' }
     } else if (!file.previewName && !file.previewExtension) {
       withPreviews[i] = { ...file, hasConflict: true, conflictReason: '文件名为空' }
+    }
+  }
+
+  for (let i = 0; i < withPreviews.length; i++) {
+    const file = withPreviews[i]
+    const fullNew = joinFilename(file.previewName, file.previewExtension)
+    const originalFull = joinFilename(file.originalName, file.originalExtension)
+    if (fullNew === originalFull) continue
+    const diskFiles = diskFilenamesByDir[file.directory]
+    if (diskFiles && diskFiles.includes(fullNew)) {
+      withPreviews[i] = {
+        ...withPreviews[i],
+        diskConflict: true,
+        hasConflict: true,
+        conflictReason: withPreviews[i].conflictReason || '磁盘已存在同名文件'
+      }
     }
   }
 
@@ -236,8 +308,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(appReducer, initialState)
 
   const files = useMemo(
-    () => computePreviews(state.files, state.rules),
-    [state.files, state.rules]
+    () => computePreviews(state.files, state.rules, state.diskFilenamesByDir),
+    [state.files, state.rules, state.diskFilenamesByDir]
   )
 
   useEffect(() => {
@@ -245,6 +317,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const history = loadHistory()
     dispatch({ type: 'INITIALIZE', presets, history })
   }, [])
+
+  useEffect(() => {
+    if (!window.api) return
+    const dirs = new Set(state.files.map((f) => f.directory).filter(Boolean))
+    for (const dir of dirs) {
+      if (state.diskFilenamesByDir[dir]) continue
+      window.api.listFilenames(dir).then((filenames) => {
+        dispatch({ type: 'SET_DISK_FILENAMES', dirPath: dir, filenames })
+      })
+    }
+  }, [state.files, state.diskFilenamesByDir])
 
   const addFile = useCallback(
     async (filePath: string, statInfo?: { size: number; mtime: string; isDirectory: boolean }) => {
@@ -279,7 +362,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         originalExtension: ext,
         size: info.size,
         mtime: info.mtime,
-        isDirectory: info.isDirectory
+        isDirectory: info.isDirectory,
+        selected: true
       }
 
       dispatch({ type: 'ADD_FILE', file: newFile })
@@ -314,6 +398,37 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'CLEAR_FILES' })
   }, [])
 
+  const toggleSelectFile = useCallback((fileId: string) => {
+    dispatch({ type: 'TOGGLE_SELECT_FILE', fileId })
+  }, [])
+
+  const selectAll = useCallback(() => {
+    dispatch({ type: 'SELECT_ALL' })
+  }, [])
+
+  const selectNone = useCallback(() => {
+    dispatch({ type: 'SELECT_NONE' })
+  }, [])
+
+  const selectChanged = useCallback(() => {
+    const changedIds = files
+      .filter((f) => {
+        const orig = joinFilename(f.originalName, f.originalExtension)
+        const prev = joinFilename(f.previewName, f.previewExtension)
+        return orig !== prev
+      })
+      .map((f) => f.id)
+    dispatch({ type: 'SET_SELECTED', fileIds: changedIds, selected: true })
+    const unchangedIds = files
+      .filter((f) => {
+        const orig = joinFilename(f.originalName, f.originalExtension)
+        const prev = joinFilename(f.previewName, f.previewExtension)
+        return orig === prev
+      })
+      .map((f) => f.id)
+    dispatch({ type: 'SET_SELECTED', fileIds: unchangedIds, selected: false })
+  }, [files])
+
   const addRule = useCallback((rule: RenameRule) => {
     dispatch({ type: 'ADD_RULE', rule })
   }, [])
@@ -346,6 +461,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     const toRename = files.filter(
       (f) =>
+        f.selected &&
         !f.hasConflict &&
         (f.previewName !== f.originalName || f.previewExtension !== f.originalExtension)
     )
@@ -498,6 +614,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     addFile,
     removeFile,
     clearFiles,
+    toggleSelectFile,
+    selectAll,
+    selectNone,
+    selectChanged,
     addRule,
     updateRule,
     removeRule,

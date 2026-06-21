@@ -5,5 +5,7 @@ contextBridge.exposeInMainWorld('api', {
   readDir: (dirPath: string) => ipcRenderer.invoke('fs:readDir', dirPath),
   stat: (filePath: string) => ipcRenderer.invoke('fs:stat', filePath),
   readFile: (filePath: string) => ipcRenderer.invoke('fs:readFile', filePath),
-  rename: (oldPath: string, newPath: string) => ipcRenderer.invoke('fs:rename', oldPath, newPath)
+  rename: (oldPath: string, newPath: string) => ipcRenderer.invoke('fs:rename', oldPath, newPath),
+  exists: (filePath: string) => ipcRenderer.invoke('fs:exists', filePath),
+  listFilenames: (dirPath: string) => ipcRenderer.invoke('fs:listFilenames', dirPath)
 })
