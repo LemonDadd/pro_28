@@ -355,6 +355,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'SET_PROCESSING', isProcessing: true })
 
     const successes: Array<{ originalPath: string; newPath: string }> = []
+    const failures: Array<{ originalPath: string; newPath: string; error: string }> = []
 
     try {
       for (const file of toRename) {
@@ -366,6 +367,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const result = await window.api.rename(file.originalPath, newPath)
         if (result.success) {
           successes.push({ originalPath: file.originalPath, newPath })
+        } else {
+          failures.push({ originalPath: file.originalPath, newPath, error: result.error || '未知错误' })
         }
       }
 
@@ -381,6 +384,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         dispatch({ type: 'UPDATE_FILES_AFTER_RENAME', operations: successes })
       }
 
+      if (failures.length > 0) {
+        const names = failures.map((f) => f.originalPath.split('/').pop() || f.originalPath.split('\\').pop() || f.originalPath).join('\n  ')
+        alert(
+          `成功重命名 ${successes.length} 个文件，失败 ${failures.length} 个：\n\n  ${names}`
+        )
+      }
+
       return successes.length > 0
     } finally {
       dispatch({ type: 'SET_PROCESSING', isProcessing: false })
@@ -393,19 +403,48 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const last = state.history[0]
     dispatch({ type: 'SET_PROCESSING', isProcessing: true })
 
+    const undoSuccesses: Array<{ originalPath: string; newPath: string }> = []
+    const undoFailures: Array<{ originalPath: string; newPath: string }> = []
+
     try {
       for (let i = last.operations.length - 1; i >= 0; i--) {
         const op = last.operations[i]
-        await window.api.rename(op.newPath, op.originalPath)
+        const result = await window.api.rename(op.newPath, op.originalPath)
+        if (result.success) {
+          undoSuccesses.push(op)
+        } else {
+          undoFailures.push(op)
+        }
       }
 
-      const newHistory = state.history.slice(1)
-      saveHistory(newHistory)
+      if (undoSuccesses.length > 0) {
+        dispatch({ type: 'UNDO_FILES', operations: undoSuccesses })
+      }
 
-      dispatch({ type: 'POP_HISTORY' })
-      dispatch({ type: 'UNDO_FILES', operations: last.operations })
+      if (undoFailures.length === 0) {
+        const newHistory = state.history.slice(1)
+        saveHistory(newHistory)
+        dispatch({ type: 'POP_HISTORY' })
+      } else {
+        const remainingOps = last.operations.filter(
+          (op) => undoFailures.some((f) => f.newPath === op.newPath && f.originalPath === op.originalPath)
+        )
+        const updatedHistory: RenameHistory[] = [
+          { ...last, operations: remainingOps, timestamp: new Date().toISOString() },
+          ...state.history.slice(1)
+        ]
+        saveHistory(updatedHistory)
+        dispatch({ type: 'SET_HISTORY', history: updatedHistory })
 
-      return true
+        const failedNames = undoFailures
+          .map((f) => f.newPath.split('/').pop() || f.newPath.split('\\').pop() || f.newPath)
+          .join('\n  ')
+        alert(
+          `成功撤销 ${undoSuccesses.length} 个，失败 ${undoFailures.length} 个（已保留历史记录，可重试）：\n\n  ${failedNames}`
+        )
+      }
+
+      return undoSuccesses.length > 0
     } finally {
       dispatch({ type: 'SET_PROCESSING', isProcessing: false })
     }

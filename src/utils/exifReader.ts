@@ -32,10 +32,26 @@ export function isImageFile(file: FileItem): boolean {
 
 export async function readExifData(filePath: string): Promise<Record<string, any> | null> {
   try {
-    const data = await exifr.parse(filePath, {
-      translateValues: true,
-      pick: EXIF_AVAILABLE_FIELDS.map((f) => f.key)
-    })
+    let data: Record<string, any> | null = null
+    if (window.api) {
+      const result = await window.api.readFile(filePath)
+      if (result && result.data) {
+        const binaryString = atob(result.data)
+        const bytes = new Uint8Array(binaryString.length)
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i)
+        }
+        data = await exifr.parse(bytes.buffer, {
+          translateValues: true,
+          pick: EXIF_AVAILABLE_FIELDS.map((f) => f.key)
+        })
+      }
+    } else {
+      data = await exifr.parse(filePath, {
+        translateValues: true,
+        pick: EXIF_AVAILABLE_FIELDS.map((f) => f.key)
+      })
+    }
     return data || null
   } catch (e) {
     console.warn('Failed to read EXIF data:', e)

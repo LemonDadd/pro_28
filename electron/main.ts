@@ -51,7 +51,7 @@ ipcMain.handle('fs:readDir', async (_event, dirPath: string) => {
   const entries = fs.readdirSync(dirPath, { withFileTypes: true })
   const files: string[] = []
   for (const entry of entries) {
-    if (entry.isFile()) {
+    if (entry.isFile() || entry.isDirectory()) {
       files.push(path.join(dirPath, entry.name))
     }
   }
