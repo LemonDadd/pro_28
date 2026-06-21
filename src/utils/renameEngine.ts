@@ -8,7 +8,8 @@ import {
   RegexRule,
   ExifRule,
   ExtensionRule,
-  FileItem
+  FileItem,
+  FileItemWithPreview
 } from '../types'
 import { splitFilename, joinFilename, escapeRegex } from './rules'
 
@@ -376,7 +377,7 @@ export function applyRules(
   return result
 }
 
-export function detectConflicts(files: FileItem[]): Map<string, string[]> {
+export function detectConflicts(files: FileItemWithPreview[]): Map<string, string[]> {
   const pathMap = new Map<string, string[]>()
 
   for (const file of files) {

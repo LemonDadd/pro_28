@@ -1,6 +1,6 @@
-import React, { createContext, useContext, useReducer, useCallback, useEffect } from 'react'
+import React, { createContext, useContext, useReducer, useCallback, useEffect, useMemo } from 'react'
 import { v4 as uuidv4 } from 'uuid'
-import { FileItem, RenameRule, Preset, RenameHistory, AppState } from '../types'
+import { FileItem, FileItemWithPreview, RenameRule, Preset, RenameHistory, AppState } from '../types'
 import { applyRules } from '../utils/renameEngine'
 import { splitFilename, joinFilename } from '../utils/rules'
 import { loadPresets, savePresets, loadHistory, saveHistory } from '../utils/storage'
@@ -24,7 +24,8 @@ type Action =
   | { type: 'REMOVE_FILE'; fileId: string }
   | { type: 'CLEAR_FILES' }
   | { type: 'UPDATE_FILE'; fileId: string; updates: Partial<FileItem> }
-  | { type: 'UPDATE_ALL_FILES'; files: FileItem[] }
+  | { type: 'UPDATE_FILES_AFTER_RENAME'; operations: Array<{ originalPath: string; newPath: string }> }
+  | { type: 'UNDO_FILES'; operations: Array<{ originalPath: string; newPath: string }> }
   | { type: 'ADD_RULE'; rule: RenameRule }
   | { type: 'UPDATE_RULE'; ruleId: string; updates: Partial<RenameRule> }
   | { type: 'REMOVE_RULE'; ruleId: string }
@@ -36,6 +37,8 @@ type Action =
   | { type: 'SET_PRESETS'; presets: Preset[] }
   | { type: 'SELECT_PRESET'; presetId: string | null }
   | { type: 'SET_HISTORY'; history: RenameHistory[] }
+  | { type: 'PUSH_HISTORY'; entry: RenameHistory }
+  | { type: 'POP_HISTORY' }
 
 const initialState: AppState = {
   files: [],
@@ -71,8 +74,47 @@ function appReducer(state: AppState, action: Action): AppState {
         )
       }
 
-    case 'UPDATE_ALL_FILES':
-      return { ...state, files: action.files }
+    case 'UPDATE_FILES_AFTER_RENAME': {
+      const ops = new Map(action.operations.map((o) => [o.originalPath, o.newPath]))
+      const updatedFiles: FileItem[] = []
+      for (const f of state.files) {
+        const newPath = ops.get(f.originalPath)
+        if (newPath) {
+          const fullName =
+            newPath.split('/').pop() || newPath.split('\\').pop() || ''
+          const { name, ext } = splitFilename(fullName)
+          updatedFiles.push({
+            ...f,
+            originalPath: newPath,
+            originalName: name,
+            originalExtension: ext
+          })
+        } else {
+          updatedFiles.push(f)
+        }
+      }
+      return { ...state, files: updatedFiles }
+    }
+
+    case 'UNDO_FILES': {
+      const ops = new Map(action.operations.map((o) => [o.newPath, o.originalPath]))
+      const updatedFiles = state.files.map((f) => {
+        const originalPath = ops.get(f.originalPath)
+        if (originalPath) {
+          const fullName =
+            originalPath.split('/').pop() || originalPath.split('\\').pop() || ''
+          const { name, ext } = splitFilename(fullName)
+          return {
+            ...f,
+            originalPath,
+            originalName: name,
+            originalExtension: ext
+          }
+        }
+        return f
+      })
+      return { ...state, files: updatedFiles }
+    }
 
     case 'ADD_RULE':
       return { ...state, rules: [...state.rules, action.rule] }
@@ -121,12 +163,19 @@ function appReducer(state: AppState, action: Action): AppState {
     case 'SET_HISTORY':
       return { ...state, history: action.history }
 
+    case 'PUSH_HISTORY':
+      return { ...state, history: [action.entry, ...state.history].slice(0, 50) }
+
+    case 'POP_HISTORY':
+      return { ...state, history: state.history.slice(1) }
+
     default:
       return state
   }
 }
 
-interface AppContextType extends AppState {
+interface AppContextType extends Omit<AppState, 'files'> {
+  files: FileItemWithPreview[]
   addFiles: (paths: string[]) => Promise<void>
   addFile: (path: string, stat?: { size: number; mtime: string; isDirectory: boolean }) => Promise<void>
   removeFile: (fileId: string) => void
@@ -137,7 +186,6 @@ interface AppContextType extends AppState {
   reorderRules: (fromIndex: number, toIndex: number) => void
   toggleRule: (ruleId: string) => void
   clearRules: () => void
-  applyRulesToFiles: () => void
   executeRename: () => Promise<boolean>
   undoLastRename: () => Promise<boolean>
   savePreset: (name: string) => void
@@ -147,65 +195,56 @@ interface AppContextType extends AppState {
 
 const AppContext = createContext<AppContextType | null>(null)
 
+function computePreviews(files: FileItem[], rules: RenameRule[]): FileItemWithPreview[] {
+  const withPreviews = files.map((file, index): FileItemWithPreview => {
+    const { name, ext } = applyRules(rules, file, index)
+    return {
+      ...file,
+      previewName: name,
+      previewExtension: ext,
+      hasConflict: false,
+      conflictReason: undefined
+    }
+  })
+
+  const pathMap = new Map<string, string[]>()
+  for (const file of withPreviews) {
+    const fullNew = joinFilename(file.previewName, file.previewExtension)
+    const key = file.directory ? `${file.directory}/${fullNew}` : fullNew
+    if (!pathMap.has(key)) {
+      pathMap.set(key, [])
+    }
+    pathMap.get(key)!.push(file.id)
+  }
+
+  for (let i = 0; i < withPreviews.length; i++) {
+    const file = withPreviews[i]
+    const fullNew = joinFilename(file.previewName, file.previewExtension)
+    const key = file.directory ? `${file.directory}/${fullNew}` : fullNew
+    const ids = pathMap.get(key) || []
+    if (ids.length > 1) {
+      withPreviews[i] = { ...file, hasConflict: true, conflictReason: '命名冲突' }
+    } else if (!file.previewName && !file.previewExtension) {
+      withPreviews[i] = { ...file, hasConflict: true, conflictReason: '文件名为空' }
+    }
+  }
+
+  return withPreviews
+}
+
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(appReducer, initialState)
+
+  const files = useMemo(
+    () => computePreviews(state.files, state.rules),
+    [state.files, state.rules]
+  )
 
   useEffect(() => {
     const presets = loadPresets()
     const history = loadHistory()
     dispatch({ type: 'INITIALIZE', presets, history })
   }, [])
-
-  const applyRulesToFiles = useCallback(() => {
-    const updatedFiles: FileItem[] = state.files.map((file, index) => {
-      const { name, ext } = applyRules(state.rules, file, index)
-      return {
-        ...file,
-        previewName: name,
-        previewExtension: ext,
-        hasConflict: false,
-        conflictReason: undefined
-      }
-    })
-
-    const pathMap = new Map<string, string[]>()
-    for (const file of updatedFiles) {
-      const fullNew = joinFilename(file.previewName, file.previewExtension)
-      const key = file.directory ? `${file.directory}/${fullNew}` : fullNew
-      if (!pathMap.has(key)) {
-        pathMap.set(key, [])
-      }
-      pathMap.get(key)!.push(file.id)
-    }
-
-    for (let i = 0; i < updatedFiles.length; i++) {
-      const file = updatedFiles[i]
-      const fullNew = joinFilename(file.previewName, file.previewExtension)
-      const key = file.directory ? `${file.directory}/${fullNew}` : fullNew
-      const ids = pathMap.get(key) || []
-      let hasConflict = false
-      let conflictReason: string | undefined
-      if (ids.length > 1) {
-        hasConflict = true
-        conflictReason = '命名冲突'
-      }
-      if (!file.previewName && !file.previewExtension) {
-        hasConflict = true
-        conflictReason = '文件名为空'
-      }
-      if (hasConflict) {
-        updatedFiles[i] = { ...file, hasConflict, conflictReason }
-      }
-    }
-
-    dispatch({ type: 'UPDATE_ALL_FILES', files: updatedFiles })
-  }, [state.rules, state.files])
-
-  useEffect(() => {
-    if (state.files.length > 0) {
-      applyRulesToFiles()
-    }
-  }, [state.rules])
 
   const addFile = useCallback(
     async (filePath: string, statInfo?: { size: number; mtime: string; isDirectory: boolean }) => {
@@ -231,38 +270,31 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const dir = lastSlash >= 0 ? filePath.slice(0, lastSlash) : ''
       const { name, ext } = splitFilename(fullName)
 
+      const fileId = uuidv4()
       const newFile: FileItem = {
-        id: uuidv4(),
+        id: fileId,
         originalPath: filePath,
         directory: dir,
         originalName: name,
         originalExtension: ext,
-        previewName: name,
-        previewExtension: ext,
         size: info.size,
         mtime: info.mtime,
-        isDirectory: info.isDirectory,
-        hasConflict: false,
-        exifData: undefined,
-        exifLoading: false
+        isDirectory: info.isDirectory
       }
 
       dispatch({ type: 'ADD_FILE', file: newFile })
 
       if (isImageFile(newFile)) {
-        dispatch({ type: 'UPDATE_FILE', fileId: newFile.id, updates: { exifLoading: true } })
+        dispatch({ type: 'UPDATE_FILE', fileId, updates: { exifLoading: true } })
         const exifResult = window.api ? await readExifData(filePath) : null
         dispatch({
           type: 'UPDATE_FILE',
-          fileId: newFile.id,
+          fileId,
           updates: { exifData: exifResult || undefined, exifLoading: false }
         })
-        applyRulesToFiles()
-      } else {
-        applyRulesToFiles()
       }
     },
-    [applyRulesToFiles]
+    []
   )
 
   const addFiles = useCallback(
@@ -276,57 +308,35 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const removeFile = useCallback((fileId: string) => {
     dispatch({ type: 'REMOVE_FILE', fileId })
-    applyRulesToFiles()
-  }, [applyRulesToFiles])
+  }, [])
 
   const clearFiles = useCallback(() => {
     dispatch({ type: 'CLEAR_FILES' })
   }, [])
 
-  const addRule = useCallback(
-    (rule: RenameRule) => {
-      dispatch({ type: 'ADD_RULE', rule })
-      applyRulesToFiles()
-    },
-    [applyRulesToFiles]
-  )
+  const addRule = useCallback((rule: RenameRule) => {
+    dispatch({ type: 'ADD_RULE', rule })
+  }, [])
 
-  const updateRule = useCallback(
-    (ruleId: string, updates: Partial<RenameRule>) => {
-      dispatch({ type: 'UPDATE_RULE', ruleId, updates })
-      applyRulesToFiles()
-    },
-    [applyRulesToFiles]
-  )
+  const updateRule = useCallback((ruleId: string, updates: Partial<RenameRule>) => {
+    dispatch({ type: 'UPDATE_RULE', ruleId, updates })
+  }, [])
 
-  const removeRule = useCallback(
-    (ruleId: string) => {
-      dispatch({ type: 'REMOVE_RULE', ruleId })
-      applyRulesToFiles()
-    },
-    [applyRulesToFiles]
-  )
+  const removeRule = useCallback((ruleId: string) => {
+    dispatch({ type: 'REMOVE_RULE', ruleId })
+  }, [])
 
-  const reorderRules = useCallback(
-    (fromIndex: number, toIndex: number) => {
-      dispatch({ type: 'REORDER_RULES', fromIndex, toIndex })
-      applyRulesToFiles()
-    },
-    [applyRulesToFiles]
-  )
+  const reorderRules = useCallback((fromIndex: number, toIndex: number) => {
+    dispatch({ type: 'REORDER_RULES', fromIndex, toIndex })
+  }, [])
 
-  const toggleRule = useCallback(
-    (ruleId: string) => {
-      dispatch({ type: 'TOGGLE_RULE', ruleId })
-      applyRulesToFiles()
-    },
-    [applyRulesToFiles]
-  )
+  const toggleRule = useCallback((ruleId: string) => {
+    dispatch({ type: 'TOGGLE_RULE', ruleId })
+  }, [])
 
   const clearRules = useCallback(() => {
     dispatch({ type: 'CLEAR_RULES' })
-    applyRulesToFiles()
-  }, [applyRulesToFiles])
+  }, [])
 
   const executeRename = useCallback(async () => {
     if (!window.api) {
@@ -334,7 +344,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return false
     }
 
-    const toRename = state.files.filter(
+    const toRename = files.filter(
       (f) =>
         !f.hasConflict &&
         (f.previewName !== f.originalName || f.previewExtension !== f.originalExtension)
@@ -366,44 +376,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           operations: successes
         }
 
-        const newHistory = [historyEntry, ...state.history].slice(0, 50)
-        saveHistory(newHistory)
-        dispatch({ type: 'SET_HISTORY', history: newHistory })
-
-        const updatedFiles = state.files
-          .map((f) => {
-            const op = successes.find((s) => s.originalPath === f.originalPath)
-            if (op) {
-              const { name, ext } = splitFilename(
-                op.newPath.split('/').pop() || op.newPath.split('\\').pop() || ''
-              )
-              return {
-                ...f,
-                originalPath: op.newPath,
-                originalName: name,
-                originalExtension: ext,
-                previewName: name,
-                previewExtension: ext
-              }
-            }
-            return f
-          })
-          .filter((f) => {
-            const failed = toRename.find(
-              (t) => t.id === f.id && !successes.some((s) => s.originalPath === t.originalPath)
-            )
-            return !failed
-          })
-
-        dispatch({ type: 'UPDATE_ALL_FILES', files: updatedFiles })
-        applyRulesToFiles()
+        saveHistory([historyEntry, ...state.history].slice(0, 50))
+        dispatch({ type: 'PUSH_HISTORY', entry: historyEntry })
+        dispatch({ type: 'UPDATE_FILES_AFTER_RENAME', operations: successes })
       }
 
       return successes.length > 0
     } finally {
       dispatch({ type: 'SET_PROCESSING', isProcessing: false })
     }
-  }, [state.files, state.history, applyRulesToFiles])
+  }, [files, state.history])
 
   const undoLastRename = useCallback(async () => {
     if (state.history.length === 0 || !window.api) return false
@@ -417,36 +399,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         await window.api.rename(op.newPath, op.originalPath)
       }
 
-      const updatedFiles = state.files.map((f) => {
-        const op = last.operations.find((o) => o.newPath === f.originalPath)
-        if (op) {
-          const { name, ext } = splitFilename(
-            op.originalPath.split('/').pop() || op.originalPath.split('\\').pop() || ''
-          )
-          return {
-            ...f,
-            originalPath: op.originalPath,
-            originalName: name,
-            originalExtension: ext,
-            previewName: name,
-            previewExtension: ext
-          }
-        }
-        return f
-      })
-
       const newHistory = state.history.slice(1)
       saveHistory(newHistory)
 
-      dispatch({ type: 'UPDATE_ALL_FILES', files: updatedFiles })
-      dispatch({ type: 'SET_HISTORY', history: newHistory })
-      applyRulesToFiles()
+      dispatch({ type: 'POP_HISTORY' })
+      dispatch({ type: 'UNDO_FILES', operations: last.operations })
 
       return true
     } finally {
       dispatch({ type: 'SET_PROCESSING', isProcessing: false })
     }
-  }, [state.files, state.history, applyRulesToFiles])
+  }, [state.history])
 
   const savePreset = useCallback(
     (name: string) => {
@@ -471,10 +434,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (preset) {
         dispatch({ type: 'SET_RULES', rules: JSON.parse(JSON.stringify(preset.rules)) })
         dispatch({ type: 'SELECT_PRESET', presetId })
-        applyRulesToFiles()
       }
     },
-    [state.presets, applyRulesToFiles]
+    [state.presets]
   )
 
   const deletePreset = useCallback(
@@ -491,6 +453,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const value: AppContextType = {
     ...state,
+    files,
     addFiles,
     addFile,
     removeFile,
@@ -501,7 +464,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     reorderRules,
     toggleRule,
     clearRules,
-    applyRulesToFiles,
     executeRename,
     undoLastRename,
     savePreset,

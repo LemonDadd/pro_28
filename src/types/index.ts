@@ -104,15 +104,18 @@ export interface FileItem {
   directory: string
   originalName: string
   originalExtension: string
-  previewName: string
-  previewExtension: string
   size: number
   mtime: string
   isDirectory: boolean
-  hasConflict: boolean
-  conflictReason?: string
   exifData?: Record<string, any>
   exifLoading?: boolean
+}
+
+export interface FileItemWithPreview extends FileItem {
+  previewName: string
+  previewExtension: string
+  hasConflict: boolean
+  conflictReason?: string
 }
 
 export interface Preset {
