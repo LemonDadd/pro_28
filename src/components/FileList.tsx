@@ -40,7 +40,7 @@ export function FileList() {
             return (
               <div
                 key={file.id}
-                className={`file-list-row ${file.hasConflict ? 'conflict' : ''}`}
+                className={`file-list-row ${file.hasConflict ? 'conflict' : ''} ${file.renameError ? 'error' : ''}`}
               >
                 <div className="col-name file-original">
                   <span className="file-icon">
@@ -53,10 +53,19 @@ export function FileList() {
                     <span className="conflict-badge" title={file.conflictReason}>
                       ⚠️ {previewFull}
                     </span>
+                  ) : file.renameError ? (
+                    <span className="error-badge" title={file.renameError}>
+                      ❌ {previewFull}
+                    </span>
                   ) : (
                     previewFull
                   )}
                   {file.exifLoading && <span className="loading-badge">读取EXIF...</span>}
+                  {file.renameError && (
+                    <span className="error-detail" title={file.renameError}>
+                      失败: {file.renameError}
+                    </span>
+                  )}
                 </div>
                 <div className="col-size">{formatFileSize(file.size)}</div>
                 <div className="col-actions">

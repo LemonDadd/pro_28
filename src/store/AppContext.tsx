@@ -2,7 +2,7 @@ import React, { createContext, useContext, useReducer, useCallback, useEffect, u
 import { v4 as uuidv4 } from 'uuid'
 import { FileItem, FileItemWithPreview, RenameRule, Preset, RenameHistory, AppState } from '../types'
 import { applyRules } from '../utils/renameEngine'
-import { splitFilename, joinFilename } from '../utils/rules'
+import { splitFilename, joinFilename, joinPath, getBasename } from '../utils/rules'
 import { loadPresets, savePresets, loadHistory, saveHistory } from '../utils/storage'
 import { readExifData, isImageFile } from '../utils/exifReader'
 
@@ -355,20 +355,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'SET_PROCESSING', isProcessing: true })
 
     const successes: Array<{ originalPath: string; newPath: string }> = []
-    const failures: Array<{ originalPath: string; newPath: string; error: string }> = []
+    const failures: Array<{ fileId: string; originalPath: string; newPath: string; error: string }> = []
 
     try {
       for (const file of toRename) {
         const newName = joinFilename(file.previewName, file.previewExtension)
-        const newPath = file.directory ? `${file.directory}/${newName}` : newName
+        const newPath = joinPath(file.directory, newName)
 
         if (newPath === file.originalPath) continue
 
         const result = await window.api.rename(file.originalPath, newPath)
         if (result.success) {
           successes.push({ originalPath: file.originalPath, newPath })
+          dispatch({ type: 'UPDATE_FILE', fileId: file.id, updates: { renameError: undefined } })
         } else {
-          failures.push({ originalPath: file.originalPath, newPath, error: result.error || '未知错误' })
+          const err = result.error || '未知错误'
+          failures.push({ fileId: file.id, originalPath: file.originalPath, newPath, error: err })
+          dispatch({ type: 'UPDATE_FILE', fileId: file.id, updates: { renameError: err } })
         }
       }
 
@@ -385,9 +388,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
 
       if (failures.length > 0) {
-        const names = failures.map((f) => f.originalPath.split('/').pop() || f.originalPath.split('\\').pop() || f.originalPath).join('\n  ')
+        const names = failures.map((f) => `- ${getBasename(f.originalPath)}: ${f.error}`).join('\n  ')
         alert(
-          `成功重命名 ${successes.length} 个文件，失败 ${failures.length} 个：\n\n  ${names}`
+          `⚠️ 部分文件重命名失败\n\n成功: ${successes.length} 个\n失败: ${failures.length} 个\n\n失败详情:\n  ${names}`
         )
       }
 
@@ -404,7 +407,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'SET_PROCESSING', isProcessing: true })
 
     const undoSuccesses: Array<{ originalPath: string; newPath: string }> = []
-    const undoFailures: Array<{ originalPath: string; newPath: string }> = []
+    const undoFailures: Array<{ originalPath: string; newPath: string; error: string }> = []
 
     try {
       for (let i = last.operations.length - 1; i >= 0; i--) {
@@ -413,7 +416,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if (result.success) {
           undoSuccesses.push(op)
         } else {
-          undoFailures.push(op)
+          undoFailures.push({ ...op, error: result.error || '未知错误' })
         }
       }
 
@@ -436,11 +439,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         saveHistory(updatedHistory)
         dispatch({ type: 'SET_HISTORY', history: updatedHistory })
 
-        const failedNames = undoFailures
-          .map((f) => f.newPath.split('/').pop() || f.newPath.split('\\').pop() || f.newPath)
-          .join('\n  ')
+        const names = undoFailures.map((f) => `- ${getBasename(f.newPath)}: ${f.error}`).join('\n  ')
         alert(
-          `成功撤销 ${undoSuccesses.length} 个，失败 ${undoFailures.length} 个（已保留历史记录，可重试）：\n\n  ${failedNames}`
+          `⚠️ 部分文件撤销失败\n\n成功: ${undoSuccesses.length} 个\n失败: ${undoFailures.length} 个（历史记录中保留，可重试）\n\n失败详情:\n  ${names}`
         )
       }
 

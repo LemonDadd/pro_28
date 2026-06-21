@@ -155,3 +155,21 @@ export function joinFilename(name: string, ext: string): string {
 export function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
+
+export function joinPath(directory: string, filename: string): string {
+  if (!directory) return filename
+  if (directory.endsWith('/') || directory.endsWith('\\')) {
+    return directory + filename
+  }
+  const hasForwardSlash = directory.includes('/')
+  const hasBackslash = directory.includes('\\')
+  if (hasBackslash && !hasForwardSlash) {
+    return `${directory}\\${filename}`
+  }
+  return `${directory}/${filename}`
+}
+
+export function getBasename(filePath: string): string {
+  const lastSlash = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'))
+  return lastSlash >= 0 ? filePath.slice(lastSlash + 1) : filePath
+}

@@ -109,6 +109,7 @@ export interface FileItem {
   isDirectory: boolean
   exifData?: Record<string, any>
   exifLoading?: boolean
+  renameError?: string
 }
 
 export interface FileItemWithPreview extends FileItem {
